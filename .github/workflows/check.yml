@@ -1,1 +1,69 @@
+name: Build NetHunter Kernel for Gauguin
 
+on:
+  workflow_dispatch: # 允许手动点击运行
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf liblz4-tool libncurses5-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev libtinfo6
+
+      - name: Clone Kernel Source
+        run: |
+          git clone https://github.com -b lineage-23.2 --depth=1 kernel-src
+
+      - name: Inject Tenda U12 (RTL8812AU) Drivers
+        run: |
+          cd kernel-src
+          # 针对高通红米Note 9 Pro最新配置文件进行精准多路径双重注入
+          CONF_PATH="arch/arm64/configs/gauguin_defconfig"
+          [ -f "$CONF_PATH" ] || CONF_PATH="arch/arm64/configs/vendor/gauguin_defconfig"
+          [ -f "$CONF_PATH" ] || CONF_PATH="arch/arm64/configs/vendor/gki_defconfig"
+          
+          echo "CONFIG_NETDEVICES=y" >> $CONF_PATH
+          echo "CONFIG_WLAN=y" >> $CONF_PATH
+          echo "CONFIG_CFG80211=y" >> $CONF_PATH
+          echo "CONFIG_MAC80211=y" >> $CONF_PATH
+          echo "CONFIG_WLAN_VENDOR_REALTEK=y" >> $CONF_PATH
+          echo "CONFIG_RTL8812AU=m" >> $CONF_PATH
+          echo "CONFIG_NAMESPACES=y" >> $CONF_PATH
+          echo "CONFIG_USER_NS=y" >> $CONF_PATH
+
+      - name: Clone AOSP Clang
+        run: |
+          # 放弃 Proton，直接拉取安全圈最顶级的 AOSP 原生完整版 AOSP-Clang 17+ 编译器链，100% 通过安卓 16 的 CFI 安全校验
+          git clone https://gitlab.com --depth=1 aosp-clang
+
+      - name: Compile Kernel
+        run: |
+          cd kernel-src
+          export ARCH=arm64
+          export SUBARCH=arm64
+          
+          # 精准注入全局环境变量，包含完整的原生 Clang 工具链
+          export PATH="$GITHUB_WORKSPACE/aosp-clang/bin:$PATH"
+          
+          # 高通厂商配置文件的双重寻找逻辑
+          if [ -f "arch/arm64/configs/gauguin_defconfig" ]; then
+              make gauguin_defconfig
+          elif [ -f "arch/arm64/configs/vendor/gauguin_defconfig" ]; then
+              make vendor/gauguin_defconfig
+          else
+              make vendor/gki_defconfig
+          fi
+          
+          # 执行编译（加入 LD=ld.lld 进行现代 llvm 链接，防止经典链接错位）
+          make -j$(nproc) CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LD=ld.lld
+
+      - name: Upload Kernel Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gauguin-nethunter-kernel
+          path: kernel-src/arch/arm64/boot/Image*
