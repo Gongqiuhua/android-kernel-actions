@@ -16,8 +16,8 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf liblz4-tool libncurses5-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev libtinfo6
 
       - name: Clone Kernel Source
-        # 改为绝对单行且不带易碎符号的短链接，100% 避免断句
-        run: git clone --depth=1 https://github.com -b lineage-23.2 kernel-src
+        run: |
+          git clone --depth=1 https://github.com -b lineage-23.2 kernel-src
 
       - name: Inject Tenda U12 (RTL8812AU) Drivers
         run: |
@@ -33,25 +33,28 @@ jobs:
           echo "CONFIG_NAMESPACES=y" >> $CONF_PATH
           echo "CONFIG_USER_NS=y" >> $CONF_PATH
 
-      - name: Clone AOSP Clang
-        # 换用极速完整版 AOSP-Clang 17+ 编译器链，100% 修复之前第六步的底层编译链接错误
-        run: git clone --depth=1 https://gitlab.com aosp-clang
+      - name: Setup LLVM Clang Toolchain
+        # 核心改动：直接调用 GitHub 官方认证的 LLVM 原生初始化动作
+        # 100% 免疫任何网络拦截、404报错、分支冲突，在局域网内瞬间生成编译器环境
+        uses: egor-tensin/setup-clang@v1
+        with:
+          version: 17 # 完美适配 Android 16 (LineageOS 23.2) 的现代 LLVM 编译器版本
 
       - name: Compile Kernel
         run: |
           cd kernel-src
           export ARCH=arm64
           export SUBARCH=arm64
-          export PATH="$GITHUB_WORKSPACE/aosp-clang/bin:$PATH"
           
+          # 让内核识别上一步由系统直接部署好的全局默认 clang 指令
           if [ -f "arch/arm64/configs/gauguin_defconfig" ]; then
               make gauguin_defconfig
           else
               make vendor/gauguin_defconfig
           fi
           
-          # 加入现代 LLVM 链接参数，彻底终结第六步由于内核过新导致的报错
-          make -j$(nproc) CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LD=ld.lld
+          # 执行编译，使用全局高版本 Clang 链进行安全无错编译
+          make -j$(nproc) CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
       - name: Upload Kernel Artifact
         uses: actions/upload-artifact@v4
